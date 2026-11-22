@@ -193,7 +193,6 @@ def main() -> int:
         if args.only and name not in args.only:
             continue
         print(f"  {name}: url_len={len(url)} has_token={'token=' in url}")
-        print(f"  key fingerprint: {hashlib.sha256(HARDCODED_KEY).hexdigest()[:16]}")
         save_one(name, url, output_dir)
     return 0
 

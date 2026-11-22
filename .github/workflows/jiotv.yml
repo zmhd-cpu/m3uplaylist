@@ -23,11 +23,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Debug egress
-        run: |
-          python -c "import requests; print(requests.get('https://httpbin.org/headers', headers={'x-test':'PROBE'}, timeout=20).text[:600])"
-          python -c "import requests; print(requests.get('https://ipinfo.io/json', timeout=20).text[:400])"
-
       - name: Generate playlists
         env:
           JIOTV_KEY: ${{ secrets.JIOTV_KEY }}
