@@ -3,8 +3,8 @@ name: Update JioTV playlists
 on:
   workflow_dispatch:
   schedule:
-    # Every 2 hours, on the hour.
-    - cron: '0 */2 * * *'
+    # Every 2 hours at :07 past — off the hour avoids GitHub's busiest slot.
+    - cron: '7 */2 * * *'
 
 permissions:
   contents: write
