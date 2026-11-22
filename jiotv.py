@@ -41,7 +41,10 @@ PREFIX = "CFP1."
 AAD = b"CFP1"
 INFO = b"cricfy-playlist-v1\x01"
 
-_key_b64 = os.environ.get("JIOTV_KEY", "")
+_key_b64 = os.environ.get("JIOTV_KEY", "").strip()
+if _key_b64:
+    # Some secret stores trim trailing '=' padding; restore it if needed.
+    _key_b64 += "=" * (-len(_key_b64) % 4)
 HARDCODED_KEY = base64.b64decode(_key_b64) if _key_b64 else None
 
 # Exact headers seen on the wire. `Host` and `Connection` are added by requests.
