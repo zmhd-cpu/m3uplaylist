@@ -128,7 +128,9 @@ def decode_playlist(content: str) -> str:
     if text.startswith(("#EXTM3U", "#EXTINF", "#KODIPROP")):
         return text
     if not text.startswith(PREFIX):
-        raise ValueError("unexpected response: neither plaintext M3U nor CFP1 blob")
+        raise ValueError(
+            f"unexpected response ({len(text)} chars): {text[:300]!r}"
+        )
     return open_token(text).decode("utf-8")
 
 
