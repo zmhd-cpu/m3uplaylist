@@ -1,26 +1,4 @@
 #!/usr/bin/env python3
-"""Fetch Cricfy JioTV playlists and decrypt them to M3U files.
-
-All endpoint URLs and the key material are supplied through environment
-variables (GitHub Secrets in Actions). Nothing sensitive lives in this file.
-
-Required environment variables:
-    JIOTV_KEY      base64 key recovered from libnative-lib.so
-    JIOTV_URL1     first playlist URL     -> jiotvplus.m3u
-    JIOTV_URL2     second playlist URL    -> jiotvplus2.m3u
-    JIOTV_URL3     third playlist URL     -> jiotvplus3.m3u
-    (further JIOTV_URLn values are supported and named jiotvplusN.m3u)
-
-The `x-test` header is a short-lived, AES-GCM-sealed UTC timestamp generated
-locally here, so no browser / Selenium / Playwright is needed.
-
-    x-test = "CFP1." + base64url_no_padding(
-        salt[16] + nonce[12] + AES-GCM(key, timestamp, aad=b"CFP1") + tag[16])
-
-    key = HMAC_SHA256(HMAC_SHA256(salt, JIOTV_KEY), b"cricfy-playlist-v1\\x01")
-
-Response bodies use the same envelope, with the playlist text as plaintext.
-"""
 
 from __future__ import annotations
 
@@ -48,7 +26,6 @@ if _key_b64:
     _key_b64 += "=" * (-len(_key_b64) % 4)
 HARDCODED_KEY = base64.b64decode(_key_b64) if _key_b64 else None
 
-# Exact headers seen on the wire. `Host` and `Connection` are added by requests.
 HEADERS = {
     "Accept": "*/*",
     "User-Agent": (
