@@ -192,6 +192,7 @@ def main() -> int:
     for name, url in urls:
         if args.only and name not in args.only:
             continue
+        print(f"  {name}: url_len={len(url)} has_token={'token=' in url}")
         save_one(name, url, output_dir)
     return 0
 
