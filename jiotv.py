@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import concurrent.futures
 import hashlib
 import hmac
 import os
@@ -70,6 +71,78 @@ def configured_urls() -> list[tuple[str, str]]:
         name = "jiotvplus" if index == 1 else f"jiotvplus{index}"
         pairs.append((name, url))
     return pairs
+
+
+# --------------------------------------------------------------------------
+# Transport (the worker only serves India / residential IPs; GitHub's US
+# runners get redirected to YouTube, so we route through a fresh India proxy).
+# --------------------------------------------------------------------------
+PROXY_SOURCES = (
+    "https://proxylist.geonode.com/api/proxy-list"
+    "?limit=40&page=1&sort_by=latency&sort_type=asc"
+    "&country=IN&protocols=http",
+    "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/"
+    "proxies/countries/IN/data.txt",
+)
+
+
+def proxy_candidates() -> list[dict | None]:
+    """Direct connection first, then freshly scraped India HTTP proxies.
+
+    Direct works from an India-based host; proxies let cloud runners (whose
+    egress is geo-blocked) reach the same endpoints. Lists are fetched every
+    run so dead proxies never get baked into a secret.
+    """
+    candidates: list[dict | None] = [None]
+
+    for source in PROXY_SOURCES:
+        try:
+            resp = requests.get(source, timeout=20)
+            if "geonode" in source:
+                items = [(i.get("ip"), i.get("port"))
+                         for i in resp.json().get("data", [])]
+            else:
+                items = []
+                for line in resp.text.splitlines():
+                    line = line.strip()
+                    if line.startswith("http://"):
+                        host = line[7:].split("/")[0]
+                        if ":" in host:
+                            items.append(tuple(host.rsplit(":", 1)))
+            for ip, port in items:
+                if ip and port:
+                    url = f"http://{ip}:{port}"
+                    candidates.append({"http": url, "https": url})
+        except (requests.RequestException, ValueError) as exc:
+            print(f"  proxy source unavailable: {exc}", file=sys.stderr)
+
+    # De-duplicate while keeping order; cap to keep screening quick.
+    seen, unique = set(), []
+    for px in candidates:
+        key = px.get("https") if px else "direct"
+        if key not in seen:
+            seen.add(key)
+            unique.append(px)
+    return unique[:40]
+
+
+def screen_proxies(url: str, candidates: list[dict | None]) -> list[dict | None]:
+    """Return only candidates that actually return a usable playlist."""
+    def usable(px: dict | None) -> dict | None:
+        try:
+            headers = dict(HEADERS, **{"x-test": make_x_test()})
+            resp = requests.get(url, headers=headers, proxies=px or {},
+                                timeout=15, allow_redirects=False)
+            if resp.status_code == 200 and resp.text.strip():
+                decode_playlist(resp.text)  # validates CFP1/plaintext
+                return px
+        except Exception:
+            pass
+        return None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
+        working = [px for px in pool.map(usable, candidates) if px is not None]
+    return working
 
 
 # --------------------------------------------------------------------------
@@ -134,32 +207,35 @@ def decode_playlist(content: str) -> str:
     return open_token(text).decode("utf-8")
 
 
-def fetch_playlist(url: str, x_test: str | None = None) -> tuple[str, str]:
-    """Fetch the URL, retrying with a fresh x-test if the server refuses it."""
+def fetch_playlist(url: str, proxies: list[dict | None]) -> tuple[str, str]:
+    """Fetch the URL, trying each working proxy with a fresh x-test."""
     last_error = "unknown"
     for attempt in range(1, 4):
-        header = make_x_test() if x_test is None else x_test
-        headers = dict(HEADERS, **{"x-test": header})
-        try:
-            resp = requests.get(url, headers=headers, timeout=30)
-            if resp.status_code == 200 and resp.text.strip():
-                # If a rejected token was supplied, don't reuse it on retry.
-                return decode_playlist(resp.text), header
-            last_error = f"HTTP {resp.status_code} (x-test rejected/expired)"
-        except requests.RequestException as exc:
-            last_error = str(exc)
-        print(f"  attempt {attempt}/3: {last_error}; making a fresh x-test",
+        for px in proxies:
+            header = make_x_test()
+            headers = dict(HEADERS, **{"x-test": header})
+            try:
+                resp = requests.get(url, headers=headers, proxies=px or {},
+                                    timeout=20, allow_redirects=False)
+                if resp.status_code == 200 and resp.text.strip():
+                    return decode_playlist(resp.text), header, px
+                last_error = f"HTTP {resp.status_code}"
+            except (requests.RequestException, ValueError) as exc:
+                last_error = str(exc)[:80]
+        print(f"  attempt {attempt}/3: {last_error}; retrying with fresh x-test",
               file=sys.stderr)
-        x_test = None  # always retry with a newly generated token
         time.sleep(1)
     raise RuntimeError(f"could not fetch playlist: {last_error}")
 
 
-def save_one(name: str, url: str, output_dir: Path) -> None:
+def save_one(name: str, url: str, output_dir: Path,
+             proxies: list[dict | None]) -> None:
     """Fetch, decrypt, and save a single playlist."""
     print(f"Fetching {name}")
-    playlist, used_header = fetch_playlist(url)
+    playlist, used_header, used_px = fetch_playlist(url, proxies)
+    route = used_px["https"] if used_px else "direct"
     print(f"  x-test: {used_header[:24]}... (generated locally)")
+    print(f"  route: {route}")
 
     out = output_dir / f"{name}.m3u"
     out.write_text(playlist, encoding="utf-8")
@@ -189,11 +265,19 @@ def main() -> int:
     output_dir = Path(args.dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Screen transports once against the first endpoint, then reuse them.
+    candidates = proxy_candidates()
+    print(f"Screening {len(candidates)} transport(s) ...")
+    working = screen_proxies(urls[0][1], candidates)
+    if not working:
+        parser.error("no working transport (direct or India proxy) found")
+    print(f"Working transport(s): "
+          f"{', '.join(px['https'] if px else 'direct' for px in working)}")
+
     for name, url in urls:
         if args.only and name not in args.only:
             continue
-        print(f"  {name}: url_len={len(url)} has_token={'token=' in url}")
-        save_one(name, url, output_dir)
+        save_one(name, url, output_dir, working)
     return 0
 
 
